@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"strconv"
@@ -35,13 +36,24 @@ type Peer struct {
 }
 
 func main() {
-	if len(os.Args) != 3 {
-		fmt.Fprintf(os.Stderr, "Usage: %s <yaml-file> <peer-name>\n", os.Args[0])
+	if len(os.Args) < 4 || len(os.Args) > 5 {
+		fmt.Fprintf(os.Stderr, "Usage: %s export <yaml-file> <peer-name> [output-file]\n", os.Args[0])
 		os.Exit(1)
 	}
 
-	yamlFile := os.Args[1]
-	peerName := os.Args[2]
+	command := os.Args[1]
+	yamlFile := os.Args[2]
+	peerName := os.Args[3]
+	var outputFile string
+	if len(os.Args) == 5 {
+		outputFile = os.Args[4]
+	}
+
+	if command != "export" {
+		fmt.Fprintf(os.Stderr, "Error: Unknown command '%s'. Use 'export'\n", command)
+		fmt.Fprintf(os.Stderr, "Usage: %s export <yaml-file> <peer-name> [output-file]\n", os.Args[0])
+		os.Exit(1)
+	}
 
 	// Read and parse YAML file
 	data, err := os.ReadFile(yamlFile)
@@ -75,10 +87,26 @@ func main() {
 	}
 
 	// Generate WireGuard configuration
-	generateWireGuardConfig(targetPeer, serverPeer, &config)
+	generateWireGuardConfig(targetPeer, serverPeer, &config, outputFile)
 }
 
-func generateWireGuardConfig(peer *Peer, serverPeer *Peer, config *Config) {
+func generateWireGuardConfig(peer *Peer, serverPeer *Peer, config *Config, outputFile string) {
+	// Set up output writer
+	var writer io.Writer
+	var file *os.File
+	var err error
+
+	if outputFile != "" {
+		file, err = os.Create(outputFile)
+		if err != nil {
+			log.Fatalf("Error creating output file: %v", err)
+		}
+		defer file.Close()
+		writer = file
+	} else {
+		writer = os.Stdout
+	}
+
 	// Extract default values from global settings
 	var listenPort string
 	var persistentKeepalive string
@@ -96,16 +124,16 @@ func generateWireGuardConfig(peer *Peer, serverPeer *Peer, config *Config) {
 	}
 
 	// Generate [Interface] section
-	fmt.Println("[Interface]")
+	fmt.Fprintln(writer, "[Interface]")
 
 	// Address from WireGuard Interface IP
 	if peer.WireGuardInterfaceIP != "" {
-		fmt.Printf("Address = %s\n", peer.WireGuardInterfaceIP)
+		fmt.Fprintf(writer, "Address = %s\n", peer.WireGuardInterfaceIP)
 	}
 
 	// Private key
 	if peer.PrivateKey != "" {
-		fmt.Printf("PrivateKey = %s\n", peer.PrivateKey)
+		fmt.Fprintf(writer, "PrivateKey = %s\n", peer.PrivateKey)
 	}
 
 	// Listen port from global settings or peer-specific
@@ -114,24 +142,24 @@ func generateWireGuardConfig(peer *Peer, serverPeer *Peer, config *Config) {
 		if strings.Contains(flag, "ListenPort") {
 			parts := strings.Split(flag, "=")
 			if len(parts) == 2 {
-				fmt.Printf("ListenPort = %s\n", strings.TrimSpace(parts[1]))
+				fmt.Fprintf(writer, "ListenPort = %s\n", strings.TrimSpace(parts[1]))
 				hasListenPort = true
 			}
 		}
 	}
 	if !hasListenPort && listenPort != "" {
-		fmt.Printf("ListenPort = %s\n", listenPort)
+		fmt.Fprintf(writer, "ListenPort = %s\n", listenPort)
 	}
 
 	// SaveConfig from peer flags
 	for _, flag := range peer.OtherFlags {
 		if strings.Contains(flag, "SaveConfig") {
-			fmt.Printf("SaveConfig = true\n")
+			fmt.Fprintf(writer, "SaveConfig = true\n")
 			break
 		}
 	}
 
-	fmt.Println()
+	fmt.Fprintln(writer)
 
 	// Generate [Peer] section
 	// If this is a client peer, connect to server
@@ -154,27 +182,27 @@ func generateWireGuardConfig(peer *Peer, serverPeer *Peer, config *Config) {
 	}
 
 	if peerToConnect != nil {
-		fmt.Printf("# %s\n", peerToConnect.NodeName)
-		fmt.Println("[Peer]")
-		fmt.Printf("PublicKey = %s\n", peerToConnect.PublicKey)
+		fmt.Fprintf(writer, "# %s\n", peerToConnect.NodeName)
+		fmt.Fprintln(writer, "[Peer]")
+		fmt.Fprintf(writer, "PublicKey = %s\n", peerToConnect.PublicKey)
 
 		// AllowedIPs
 		if peerToConnect.AllowedIPs != "" {
-			fmt.Printf("AllowedIPs = %s\n", peerToConnect.AllowedIPs)
+			fmt.Fprintf(writer, "AllowedIPs = %s\n", peerToConnect.AllowedIPs)
 		} else if peerToConnect.WireGuardInterfaceIP != "" {
-			fmt.Printf("AllowedIPs = %s\n", peerToConnect.WireGuardInterfaceIP)
+			fmt.Fprintf(writer, "AllowedIPs = %s\n", peerToConnect.WireGuardInterfaceIP)
 		}
 
 		// Endpoint (Public IP + Port)
 		if peerToConnect.PublicIP != "" {
-			fmt.Printf("Endpoint = %s:%s\n", peerToConnect.PublicIP, listenPort)
+			fmt.Fprintf(writer, "Endpoint = %s:%s\n", peerToConnect.PublicIP, listenPort)
 		}
 
 		// PersistentKeepalive
 		if persistentKeepalive != "" {
 			keepalive, err := strconv.Atoi(persistentKeepalive)
 			if err == nil && keepalive > 0 {
-				fmt.Printf("PersistentKeepalive = %s\n", persistentKeepalive)
+				fmt.Fprintf(writer, "PersistentKeepalive = %s\n", persistentKeepalive)
 			}
 		}
 	}
