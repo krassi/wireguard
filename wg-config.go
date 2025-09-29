@@ -5,6 +5,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 
@@ -36,24 +37,51 @@ type Peer struct {
 }
 
 func main() {
-	if len(os.Args) < 4 || len(os.Args) > 5 {
-		fmt.Fprintf(os.Stderr, "Usage: %s export <yaml-file> <peer-name> [output-file]\n", os.Args[0])
+	if len(os.Args) < 3 {
+		fmt.Fprintf(os.Stderr, "Usage: \n")
+		fmt.Fprintf(os.Stderr, "  %s export <yaml-file> <peer-name> [output-file]\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s create <peer-name> [output-file]\n", os.Args[0])
 		os.Exit(1)
 	}
 
 	command := os.Args[1]
-	yamlFile := os.Args[2]
-	peerName := os.Args[3]
-	var outputFile string
-	if len(os.Args) == 5 {
-		outputFile = os.Args[4]
-	}
 
-	if command != "export" {
-		fmt.Fprintf(os.Stderr, "Error: Unknown command '%s'. Use 'export'\n", command)
-		fmt.Fprintf(os.Stderr, "Usage: %s export <yaml-file> <peer-name> [output-file]\n", os.Args[0])
+	switch command {
+	case "export":
+		if len(os.Args) < 4 || len(os.Args) > 5 {
+			fmt.Fprintf(os.Stderr, "Usage: %s export <yaml-file> <peer-name> [output-file]\n", os.Args[0])
+			os.Exit(1)
+		}
+		yamlFile := os.Args[2]
+		peerName := os.Args[3]
+		var outputFile string
+		if len(os.Args) == 5 {
+			outputFile = os.Args[4]
+		}
+		handleExport(yamlFile, peerName, outputFile)
+
+	case "create":
+		if len(os.Args) < 3 || len(os.Args) > 4 {
+			fmt.Fprintf(os.Stderr, "Usage: %s create <peer-name> [output-file]\n", os.Args[0])
+			os.Exit(1)
+		}
+		peerName := os.Args[2]
+		var outputFile string
+		if len(os.Args) == 4 {
+			outputFile = os.Args[3]
+		}
+		handleCreate(peerName, outputFile)
+
+	default:
+		fmt.Fprintf(os.Stderr, "Error: Unknown command '%s'. Use 'export' or 'create'\n", command)
+		fmt.Fprintf(os.Stderr, "Usage: \n")
+		fmt.Fprintf(os.Stderr, "  %s export <yaml-file> <peer-name> [output-file]\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s create <peer-name> [output-file]\n", os.Args[0])
 		os.Exit(1)
 	}
+}
+
+func handleExport(yamlFile, peerName, outputFile string) {
 
 	// Read and parse YAML file
 	data, err := os.ReadFile(yamlFile)
@@ -88,6 +116,60 @@ func main() {
 
 	// Generate WireGuard configuration
 	generateWireGuardConfig(targetPeer, serverPeer, &config, outputFile)
+}
+
+func handleCreate(peerName, outputFile string) {
+	// Set up output writer
+	var writer io.Writer
+	var file *os.File
+	var err error
+
+	if outputFile != "" {
+		// Open file in append mode
+		file, err = os.OpenFile(outputFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			log.Fatalf("Error opening output file: %v", err)
+		}
+		defer file.Close()
+		writer = file
+	} else {
+		writer = os.Stdout
+	}
+
+	// Generate WireGuard key pair
+	privateKey, publicKey, err := generateKeyPair()
+	if err != nil {
+		log.Fatalf("Error generating key pair: %v", err)
+	}
+
+	// Generate peer configuration template
+	fmt.Fprintf(writer, "# %s\n", peerName)
+	fmt.Fprintln(writer, "[Peer]")
+	fmt.Fprintf(writer, "PublicKey = %s\n", publicKey)
+	fmt.Fprintf(writer, "PrivateKey = %s\n", privateKey)
+	fmt.Fprintln(writer, "AllowedIPs = ")
+	fmt.Fprintln(writer)
+}
+
+func generateKeyPair() (privateKey, publicKey string, err error) {
+	// Generate private key using wg genkey
+	cmd := exec.Command("/usr/bin/wg", "genkey")
+	privateKeyBytes, err := cmd.Output()
+	if err != nil {
+		return "", "", fmt.Errorf("failed to generate private key: %v", err)
+	}
+	privateKey = strings.TrimSpace(string(privateKeyBytes))
+
+	// Generate public key by piping private key to wg pubkey
+	cmd = exec.Command("/usr/bin/wg", "pubkey")
+	cmd.Stdin = strings.NewReader(privateKey)
+	publicKeyBytes, err := cmd.Output()
+	if err != nil {
+		return "", "", fmt.Errorf("failed to generate public key: %v", err)
+	}
+	publicKey = strings.TrimSpace(string(publicKeyBytes))
+
+	return privateKey, publicKey, nil
 }
 
 func generateWireGuardConfig(peer *Peer, serverPeer *Peer, config *Config, outputFile string) {
