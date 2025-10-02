@@ -12,6 +12,9 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// WireGuard command path
+const WG_CMD = "/usr/bin/wg"
+
 // Config represents the structure of result.yaml
 type Config struct {
 	GlobalSettings struct {
@@ -153,7 +156,7 @@ func handleCreate(peerName, outputFile string) {
 
 func generateKeyPair() (privateKey, publicKey string, err error) {
 	// Generate private key using wg genkey
-	cmd := exec.Command("/usr/bin/wg", "genkey")
+	cmd := exec.Command(WG_CMD, "genkey")
 	privateKeyBytes, err := cmd.Output()
 	if err != nil {
 		return "", "", fmt.Errorf("failed to generate private key: %v", err)
@@ -161,7 +164,7 @@ func generateKeyPair() (privateKey, publicKey string, err error) {
 	privateKey = strings.TrimSpace(string(privateKeyBytes))
 
 	// Generate public key by piping private key to wg pubkey
-	cmd = exec.Command("/usr/bin/wg", "pubkey")
+	cmd = exec.Command(WG_CMD, "pubkey")
 	cmd.Stdin = strings.NewReader(privateKey)
 	publicKeyBytes, err := cmd.Output()
 	if err != nil {
