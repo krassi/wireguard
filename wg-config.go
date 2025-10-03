@@ -42,7 +42,7 @@ type Peer struct {
 func main() {
 	if len(os.Args) < 3 {
 		fmt.Fprintf(os.Stderr, "Usage: \n")
-		fmt.Fprintf(os.Stderr, "  %s export <yaml-file> <peer-name> [output-file]\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s export <yaml-file> <peer-name> [output-file] [specific-peer-names...]\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "  %s create <peer-name> [output-file]\n", os.Args[0])
 		os.Exit(1)
 	}
@@ -51,17 +51,28 @@ func main() {
 
 	switch command {
 	case "export":
-		if len(os.Args) < 4 || len(os.Args) > 5 {
-			fmt.Fprintf(os.Stderr, "Usage: %s export <yaml-file> <peer-name> [output-file]\n", os.Args[0])
+		if len(os.Args) < 4 {
+			fmt.Fprintf(os.Stderr, "Usage: %s export <yaml-file> <peer-name> [-o output-file] [specific-peer-names...]\n", os.Args[0])
 			os.Exit(1)
 		}
 		yamlFile := os.Args[2]
 		peerName := os.Args[3]
 		var outputFile string
-		if len(os.Args) == 5 {
-			outputFile = os.Args[4]
+		var specificPeers []string
+
+		// Parse arguments starting from index 4
+		i := 4
+		for i < len(os.Args) {
+			if os.Args[i] == "-o" && i+1 < len(os.Args) {
+				outputFile = os.Args[i+1]
+				i += 2 // Skip both -o and the filename
+			} else {
+				// This is a specific peer name
+				specificPeers = append(specificPeers, os.Args[i])
+				i++
+			}
 		}
-		handleExport(yamlFile, peerName, outputFile)
+		handleExport(yamlFile, peerName, outputFile, specificPeers)
 
 	case "create":
 		if len(os.Args) < 3 || len(os.Args) > 4 {
@@ -78,13 +89,13 @@ func main() {
 	default:
 		fmt.Fprintf(os.Stderr, "Error: Unknown command '%s'. Use 'export' or 'create'\n", command)
 		fmt.Fprintf(os.Stderr, "Usage: \n")
-		fmt.Fprintf(os.Stderr, "  %s export <yaml-file> <peer-name> [output-file]\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s export <yaml-file> <peer-name> [output-file] [specific-peer-names...]\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "  %s create <peer-name> [output-file]\n", os.Args[0])
 		os.Exit(1)
 	}
 }
 
-func handleExport(yamlFile, peerName, outputFile string) {
+func handleExport(yamlFile, peerName, outputFile string, specificPeers []string) {
 
 	// Read and parse YAML file
 	data, err := os.ReadFile(yamlFile)
@@ -118,7 +129,7 @@ func handleExport(yamlFile, peerName, outputFile string) {
 	}
 
 	// Generate WireGuard configuration
-	generateWireGuardConfig(targetPeer, serverPeer, &config, outputFile)
+	generateWireGuardConfig(targetPeer, serverPeer, &config, outputFile, specificPeers)
 }
 
 func handleCreate(peerName, outputFile string) {
@@ -175,7 +186,7 @@ func generateKeyPair() (privateKey, publicKey string, err error) {
 	return privateKey, publicKey, nil
 }
 
-func generateWireGuardConfig(peer *Peer, serverPeer *Peer, config *Config, outputFile string) {
+func generateWireGuardConfig(peer *Peer, serverPeer *Peer, config *Config, outputFile string, specificPeers []string) {
 	// Set up output writer
 	var writer io.Writer
 	var file *os.File
@@ -246,49 +257,56 @@ func generateWireGuardConfig(peer *Peer, serverPeer *Peer, config *Config, outpu
 
 	fmt.Fprintln(writer)
 
-	// Generate [Peer] section
-	// If this is a client peer, connect to server
-	// If this is the server, show first available peer as example
+	// Generate [Peer] sections for selected peers
+	for i := range config.Peers {
+		p := &config.Peers[i]
+		// Skip the current peer (don't include itself)
+		if p.NodeName == peer.NodeName {
+			continue
+		}
+		// Only include peers with public keys
+		if p.PublicKey == "" {
+			continue
+		}
 
-	var peerToConnect *Peer
-
-	if peer.PrivateKey != "" && peer.PublicIP != "" {
-		// This is a server, find first client peer to show as example
-		for i := range config.Peers {
-			p := &config.Peers[i]
-			if p.NodeName != peer.NodeName && p.PublicKey != "" {
-				peerToConnect = p
-				break
+		// If specific peers are requested, only include those (loose match)
+		if len(specificPeers) > 0 {
+			found := false
+			for _, specificPeer := range specificPeers {
+				if strings.Contains(strings.ToLower(p.NodeName), strings.ToLower(specificPeer)) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				continue
 			}
 		}
-	} else {
-		// This is a client, connect to server
-		peerToConnect = serverPeer
-	}
 
-	if peerToConnect != nil {
-		fmt.Fprintf(writer, "# %s\n", peerToConnect.NodeName)
+		fmt.Fprintf(writer, "# %s\n", p.NodeName)
 		fmt.Fprintln(writer, "[Peer]")
-		fmt.Fprintf(writer, "PublicKey = %s\n", peerToConnect.PublicKey)
+		fmt.Fprintf(writer, "PublicKey = %s\n", p.PublicKey)
 
 		// AllowedIPs
-		if peerToConnect.AllowedIPs != "" {
-			fmt.Fprintf(writer, "AllowedIPs = %s\n", peerToConnect.AllowedIPs)
-		} else if peerToConnect.WireGuardInterfaceIP != "" {
-			fmt.Fprintf(writer, "AllowedIPs = %s\n", peerToConnect.WireGuardInterfaceIP)
+		if p.AllowedIPs != "" {
+			fmt.Fprintf(writer, "AllowedIPs = %s\n", p.AllowedIPs)
+		} else if p.WireGuardInterfaceIP != "" {
+			fmt.Fprintf(writer, "AllowedIPs = %s\n", p.WireGuardInterfaceIP)
 		}
 
-		// Endpoint (Public IP + Port)
-		if peerToConnect.PublicIP != "" {
-			fmt.Fprintf(writer, "Endpoint = %s:%s\n", peerToConnect.PublicIP, listenPort)
+		// Endpoint (Public IP + Port) - only for peers with public IPs
+		if p.PublicIP != "" {
+			fmt.Fprintf(writer, "Endpoint = %s:%s\n", p.PublicIP, listenPort)
 		}
 
-		// PersistentKeepalive
+		// PersistentKeepalive - apply to all peers from global settings
 		if persistentKeepalive != "" {
 			keepalive, err := strconv.Atoi(persistentKeepalive)
 			if err == nil && keepalive > 0 {
 				fmt.Fprintf(writer, "PersistentKeepalive = %s\n", persistentKeepalive)
 			}
 		}
+
+		fmt.Fprintln(writer)
 	}
 }
